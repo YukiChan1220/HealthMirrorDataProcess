@@ -470,6 +470,7 @@ class Pipeline:
                 continue
             
             self.data_processor.load_data(os.path.join(data_path, path))
+            print(f"Processing patient {path}...")
             
             signal_names = ['rppg', 'ecg']
             if self.data_processor.data.has_ppg():
@@ -546,6 +547,8 @@ class Pipeline:
             if patient_num < starting_point or (ending_point is not None and patient_num > ending_point):
                 continue
             
+            print(f"Checking cleaned data {file}...")
+
             try:
                 df = pd.read_csv(os.path.join(log_path, file))
                 
