@@ -10,3 +10,4 @@ rppg2ecg.onnx
 /lab_test_cleaned
 /lab_ppg_mirror_data
 /lab_ppg_washed
+/test_sliced

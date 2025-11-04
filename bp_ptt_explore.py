@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import csv
 
-lab = True
+lab = False
 
 if lab:
     data_dir = "./lab_mirror_data"
@@ -16,7 +16,7 @@ else:
     data_dir = "./patient_data"
     output_file = "overall_patient_info.csv"
     merged_patient_file = "merged_patient_info.csv"
-    cleaned_dir = "./test_cleaned"
+    cleaned_dir = "./test_sliced"
 
 def load_all_patients(data_dir=data_dir, output_file=output_file):
     patient_info = PatientInfo(data_dir, save_dir=output_file, mode="file")
@@ -45,46 +45,113 @@ def filter_signal(data, fs=512, lowcut=0.5, highcut=5.0, order=4):
     data = signal.filtfilt(b, a, data)
     return data
 
-def find_peaks(data, threshold=0, fs=512):
-    peaks, _ = signal.find_peaks(data, height=threshold, distance=fs*0.5)
+def find_peaks_new(signal_data, signal_type='rppg', fs=512, min_distance=None):
+    """
+    在信号中寻找峰值，针对不同信号类型使用不同策略
+    (从data_slicer.py移植)
+    
+    参数:
+        signal_data: 输入信号
+        signal_type: 信号类型 ('rppg' 或 'ecg')
+        fs: 采样频率
+        min_distance: 峰值之间的最小距离（样本点数），默认为0.5秒
+    """
+    if min_distance is None:
+        min_distance = int(fs * 0.35)
+    
+    if signal_type == 'ecg':
+        # ECG R峰检测：使用更严格的参数
+        signal_std = np.std(signal_data)
+        
+        # 使用prominence参数确保只检测尖锐的峰（R峰）
+        prominence_threshold = 0.3 * signal_std
+        
+        # 使用width参数限制峰的宽度（R峰通常较窄）
+        # 最大宽度约为0.12秒（QRS波群的典型宽度）
+        max_width = int(fs * 0.12)
+        
+        peaks, properties = signal.find_peaks(
+            signal_data,
+            distance=min_distance,
+            prominence=prominence_threshold,
+            width=(1, max_width)
+        )
+    else:
+        # rPPG峰检测：使用较宽松的参数
+        peaks, _ = signal.find_peaks(signal_data, distance=min_distance)
+    
     return peaks
 
-def calculate_ptt(rppg_peaks, ecg_peaks, timestamps):
-    if abs(len(rppg_peaks) - len(ecg_peaks)) > 1:
+def calculate_ptt_new(time, rppg_signal, ecg_signal):
+    """
+    估算PTT值 (从data_slicer.py移植)
+    
+    参数:
+        time: 时间戳数组
+        rppg_signal: rPPG信号
+        ecg_signal: ECG信号
+        
+    返回:
+        ptt: 估算的PTT值（秒），如果无法估算则返回None
+        rppg_peaks: rPPG峰值索引
+        ecg_peaks: ECG峰值索引
+        std: PTT值的标准差
+    """
+    # 寻找峰值
+    rppg_peaks = find_peaks_new(rppg_signal, signal_type='rppg', fs=512)
+    ecg_peaks = find_peaks_new(ecg_signal, signal_type='ecg', fs=512)
+    
+    if len(rppg_peaks) == 0 or len(ecg_peaks) == 0:
         return None, None, None
-    min_peak_count = min(len(rppg_peaks), len(ecg_peaks))
-    best_align = 0
-    best_ptt = 10
     
-    for align in range(-2, 3):
-        ptt_values = []
-        for i in range(min_peak_count):
-            rppg_idx = i + align
-            ecg_idx = i
-            if 0 <= rppg_idx < len(rppg_peaks) and 0 <= ecg_idx < len(ecg_peaks):
-                ptt = timestamps[rppg_peaks[rppg_idx]] - timestamps[ecg_peaks[ecg_idx]]
-                # ptt should be positive
-                if abs(ptt) < 1:
-                    ptt_values.append(ptt)
-        if len(ptt_values) > 0:
-            avg_ptt = np.mean(ptt_values)
-            std = np.std(ptt_values)
-            if abs(avg_ptt) < abs(best_ptt) and avg_ptt > 0:
-                best_ptt = avg_ptt
-                best_align = align
+    # 为每个ECG峰找到最近的后续rPPG峰
+    matched_pairs = []
+    ptt_values = []
     
-    return best_ptt, best_align, std
+    for ecg_idx in ecg_peaks:
+        ecg_time = time[ecg_idx]
+        
+        # 找到在ECG峰之后的rPPG峰
+        future_rppg_peaks = rppg_peaks[rppg_peaks > ecg_idx]
+        
+        if len(future_rppg_peaks) > 0:
+            # 选择最近的rPPG峰
+            rppg_idx = future_rppg_peaks[0]
+            rppg_time = time[rppg_idx]
+            
+            # 计算PTT（应该为正值，因为rPPG在ECG之后）
+            ptt = rppg_time - ecg_time
+
+            # 只接受合理范围内的PTT (0.05s到0.4s，即50ms到400ms)
+            if 0.05 < ptt < 0.4:
+                matched_pairs.append((ecg_idx, rppg_idx))
+                ptt_values.append(ptt)
+    
+    if len(ptt_values) == 0:
+        return None, None, None
+    
+    # 使用中位数来避免异常值的影响
+    ptt_median = np.median(ptt_values)
+    
+    # 过滤掉偏差过大的值
+    ptt_filtered = [p for p in ptt_values if abs(p - ptt_median) < 0.1]
+    
+    if len(ptt_filtered) == 0:
+        return None, None, None
+    
+    ptt_final = np.mean(ptt_filtered)
+    std = np.std(ptt_filtered)
+    
+    return ptt_final, None, std
 
 def ptt_signals(timestamps, rppg_signal, ecg_signal, peak=True, filter=True, fs=512):
     if filter:
         rppg_signal = filter_signal(rppg_signal, fs=fs)
         ecg_signal = filter_signal(ecg_signal, fs=fs)
     if peak:
-        rppg_peaks = find_peaks(rppg_signal, fs=fs)
-        ecg_peaks = find_peaks(ecg_signal, fs=fs)
-        ptt, align, std = calculate_ptt(rppg_peaks, ecg_peaks, timestamps)
+        ptt, align, std = calculate_ptt_new(timestamps, rppg_signal, ecg_signal)
         if ptt is not None:
-            print(f"PTT: {ptt:.3f} seconds, Align: {align}, Std: {std:.3f}")
+            print(f"PTT: {ptt:.3f} seconds, Std: {std:.3f}")
         return ptt, align, std
     return None, None, None
 
@@ -93,11 +160,13 @@ def plot_signals(timestamps, rppg_signal, ecg_signal, peak=True, filter=True, fs
         filter_signal(rppg_signal, fs=fs)
         filter_signal(ecg_signal, fs=fs)
     if peak:
-        rppg_peaks = find_peaks(rppg_signal, fs=fs)
-        ecg_peaks = find_peaks(ecg_signal, fs=fs)
-        ptt, align, std = calculate_ptt(rppg_peaks, ecg_peaks, timestamps)
+        ptt, align, std = calculate_ptt_new(timestamps, rppg_signal, ecg_signal)
         if ptt is not None:
-            print(f"PTT: {ptt:.3f} seconds, Align: {align}, Std: {std:.3f}")
+            print(f"PTT: {ptt:.3f} seconds, Std: {std:.3f}")
+        
+        # 重新计算峰值用于显示
+        rppg_peaks = find_peaks_new(rppg_signal, signal_type='rppg', fs=fs)
+        ecg_peaks = find_peaks_new(ecg_signal, signal_type='ecg', fs=fs)
 
     plt.figure(figsize=(12, 6))
     plt.subplot(2, 1, 1)
@@ -181,7 +250,8 @@ for std_threshold in np.linspace(0.005, 0.2, 40):
             low_bps.append(ptt_bp[i][1])
             mean_bps.append((ptt_bp[i][1]+ptt_bp[i][2])/2)
 
-        if len(ptt_values) < 10:
+        # minimum 15 data points to calculate correlation
+        if len(ptt_values) < 15:
             continue
 
         ptt_values = np.array(ptt_values)

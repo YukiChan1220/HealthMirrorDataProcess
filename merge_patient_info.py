@@ -25,14 +25,14 @@ def merge_patient_info(extracted_file, marked_file, output_file):
             mf.seek(0)
 
 def main():
-    lab = True
+    lab = False
     if lab:
         extracted_file = 'lab_overall_patient_info.csv'
         marked_file = 'lab_overall_patient_info.csv'
         output_file = 'lab_merged_patient_info.csv'
     else:
         extracted_file = 'overall_patient_info.csv'
-        marked_file = 'extracted_vitals_251001.csv'
+        marked_file = 'extracted_vitals_251102.csv'
         output_file = 'merged_patient_info.csv'
     merge_patient_info(extracted_file, marked_file, output_file)
 
