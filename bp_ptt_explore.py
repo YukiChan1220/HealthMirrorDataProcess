@@ -4,6 +4,7 @@ import scipy.signal as signal
 import matplotlib.pyplot as plt
 import numpy as np
 import csv
+from scipy.stats import spearmanr
 
 lab = False
 
@@ -45,6 +46,43 @@ def filter_signal(data, fs=512, lowcut=0.5, highcut=5.0, order=4):
     data = signal.filtfilt(b, a, data)
     return data
 
+def ecg_peak_pantompkins(ecg_signal, fs=512):
+    # Bandpass filter
+    filtered_ecg = filter_signal(ecg_signal, fs=fs, lowcut=5.0, highcut=15.0, order=2)
+    
+    # Derivative to enhance QRS complexes
+    derivative_ecg = np.gradient(filtered_ecg)
+    
+    # Squaring
+    squared_ecg = np.square(derivative_ecg)
+    
+    # Moving average
+    window_size = int(0.150 * fs)  # 150 ms window
+    pantompkins = np.convolve(squared_ecg, np.ones(window_size)/window_size, mode='same')
+    pantompkins = 2 * pantompkins / np.max(pantompkins)
+    print(pantompkins)
+    
+    # Peak detection with prominence and width constraints
+    signal_std = np.std(pantompkins)
+    max_width = int(fs * 0.5)  # Max width ~120 ms
+
+    pt_peaks, _ = signal.find_peaks(
+        pantompkins,
+        distance=int(fs * 0.35),
+        width=(1, max_width)
+    )
+
+    peaks = []
+    for peak in pt_peaks:
+        left = max(0, peak - int(0.1 * fs))
+        right = min(len(ecg_signal), peak + int(0.1 * fs))
+        p = np.argmax(ecg_signal[left:right]) + left
+        peaks.append(p)
+    
+    print (f"Detected {len(peaks)}/{len(pt_peaks)} ECG peaks using Pan-Tompkins algorithm.")
+        
+    return peaks, pantompkins
+
 def find_peaks_new(signal_data, signal_type='rppg', fs=512, min_distance=None):
     """
     在信号中寻找峰值，针对不同信号类型使用不同策略
@@ -60,27 +98,13 @@ def find_peaks_new(signal_data, signal_type='rppg', fs=512, min_distance=None):
         min_distance = int(fs * 0.35)
     
     if signal_type == 'ecg':
-        # ECG R峰检测：使用更严格的参数
-        signal_std = np.std(signal_data)
-        
-        # 使用prominence参数确保只检测尖锐的峰（R峰）
-        prominence_threshold = 0.3 * signal_std
-        
-        # 使用width参数限制峰的宽度（R峰通常较窄）
-        # 最大宽度约为0.12秒（QRS波群的典型宽度）
-        max_width = int(fs * 0.12)
-        
-        peaks, properties = signal.find_peaks(
-            signal_data,
-            distance=min_distance,
-            prominence=prominence_threshold,
-            width=(1, max_width)
-        )
+        peaks, pantompkins = ecg_peak_pantompkins(signal_data, fs=fs)
+        return peaks, pantompkins
     else:
-        # rPPG峰检测：使用较宽松的参数
-        peaks, _ = signal.find_peaks(signal_data, distance=min_distance)
+        peaks, properties = signal.find_peaks(signal_data, distance=min_distance, height=0)
+        return peaks, properties
     
-    return peaks
+    
 
 def calculate_ptt_new(time, rppg_signal, ecg_signal):
     """
@@ -98,8 +122,8 @@ def calculate_ptt_new(time, rppg_signal, ecg_signal):
         std: PTT值的标准差
     """
     # 寻找峰值
-    rppg_peaks = find_peaks_new(rppg_signal, signal_type='rppg', fs=512)
-    ecg_peaks = find_peaks_new(ecg_signal, signal_type='ecg', fs=512)
+    rppg_peaks, _ = find_peaks_new(rppg_signal, signal_type='rppg', fs=512)
+    ecg_peaks, _ = find_peaks_new(ecg_signal, signal_type='ecg', fs=512)
     
     if len(rppg_peaks) == 0 or len(ecg_peaks) == 0:
         return None, None, None
@@ -165,8 +189,9 @@ def plot_signals(timestamps, rppg_signal, ecg_signal, peak=True, filter=True, fs
             print(f"PTT: {ptt:.3f} seconds, Std: {std:.3f}")
         
         # 重新计算峰值用于显示
-        rppg_peaks = find_peaks_new(rppg_signal, signal_type='rppg', fs=fs)
-        ecg_peaks = find_peaks_new(ecg_signal, signal_type='ecg', fs=fs)
+        rppg_peaks, _ = find_peaks_new(rppg_signal, signal_type='rppg', fs=fs)
+        ecg_peaks, pantompkins = find_peaks_new(ecg_signal, signal_type='ecg', fs=fs)
+        print(f"ecg: {len(ecg_signal)}, pan-tompkins: {len(pantompkins)}, rppg: {len(rppg_signal)}")
 
     plt.figure(figsize=(12, 6))
     plt.subplot(2, 1, 1)
@@ -180,6 +205,7 @@ def plot_signals(timestamps, rppg_signal, ecg_signal, peak=True, filter=True, fs
 
     plt.subplot(2, 1, 2)
     plt.plot(timestamps, ecg_signal, label='ECG Signal')
+    plt.plot(timestamps, pantompkins, label='Pan-Tompkins')
     if peak:
         plt.plot(timestamps[rppg_peaks], rppg_signal[rppg_peaks], "x", label='rPPG Peaks')
         plt.plot(timestamps[ecg_peaks], ecg_signal[ecg_peaks], "o", label='ECG Peaks')
@@ -212,8 +238,8 @@ bp_dict = {int(p['lab_patient_id']): (int(p['low_blood_pressure']), int(p['high_
 ptt_list = []
 for patient_id, timestamps, rppg_signal, ecg_signal in cleaned_data:
     print(f"Patient ID: {patient_id}")
-    #ptt, align, std = plot_signals(timestamps, rppg_signal, ecg_signal, peak=True, filter=True, fs=512)
-    ptt, align, std = ptt_signals(timestamps, rppg_signal, ecg_signal, peak=True, filter=True, fs=512)
+    ptt, align, std = plot_signals(timestamps, rppg_signal, ecg_signal, peak=True, filter=True, fs=512)
+    #ptt, align, std = ptt_signals(timestamps, rppg_signal, ecg_signal, peak=True, filter=True, fs=512)
     ptt_list.append((patient_id, ptt, align, std))
 
 best_coef = 0
@@ -251,7 +277,7 @@ for std_threshold in np.linspace(0.005, 0.2, 40):
             mean_bps.append((ptt_bp[i][1]+ptt_bp[i][2])/2)
 
         # minimum 15 data points to calculate correlation
-        if len(ptt_values) < 15:
+        if len(ptt_values) < 8:
             continue
 
         ptt_values = np.array(ptt_values)
@@ -267,7 +293,7 @@ for std_threshold in np.linspace(0.005, 0.2, 40):
         mean_coef = np.corrcoef(ptt_values, mean_bps)[0, 1]
         mean_coef_rec = np.corrcoef(ptt_values_rec, mean_bps)[0, 1]
         coef = low_coef + high_coef + mean_coef
-        if coef < best_coef and low_coef < 0 and high_coef < 0 and mean_coef < 0:
+        if coef > best_coef and low_coef > 0 and high_coef > 0 and mean_coef > 0:
             best_coef = coef
             best_std = std_threshold
             best_ptt_low_threshold = ptt_low_threshold
@@ -278,11 +304,11 @@ print(f"Best coef: {best_coef:.2f} with std threshold: {best_std}, ptt low thres
 
 ptt_bp = []
 for patient_id, ptt, align, std in ptt_list:
-    if std is None or std > 0.035:
+    if std is None or std > best_coef:
         continue
     if patient_id in bp_dict:
         low_bp, high_bp = bp_dict[patient_id]
-        if(ptt != None and 0.11 < abs(ptt) and abs(ptt) < 1 and low_bp != -1 and high_bp != -1):
+        if(ptt != None and best_ptt_low_threshold < abs(ptt) and abs(ptt) < 1 and low_bp != -1 and high_bp != -1):
             ptt_bp.append((patient_id, ptt, low_bp, high_bp, std))
             print(f"Patient ID: {patient_id}, PTT: {ptt:.3f} seconds, Low BP: {low_bp}, High BP: {high_bp}, Std: {std:.3f}")
 

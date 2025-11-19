@@ -11,3 +11,6 @@ rppg2ecg.onnx
 /lab_ppg_mirror_data
 /lab_ppg_washed
 /test_sliced
+/mirror2_data
+/mirror2_cleaned
+*.csv

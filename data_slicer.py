@@ -103,8 +103,8 @@ class SignalResampler:
             if len(signal) != len(time):
                 raise ValueError(f"Signal length ({len(signal)}) must match time length ({len(time)})")
             
-            # 使用线性插值进行重采样
-            interpolator = interp1d(time, signal, kind='linear', 
+            # 使用三次样条插值进行重采样
+            interpolator = interp1d(time, signal, kind='cubic', 
                                    fill_value='extrapolate', bounds_error=False)
             signal_resampled = interpolator(time_resampled)
             signals_resampled.append(signal_resampled)
@@ -242,7 +242,7 @@ class PTTEstimator:
             signal_mean = np.mean(signal)
             
             # 2. 设置高度阈值（只检测足够高的峰）
-            # height_threshold = signal_mean + 0.2 * signal_std
+            height_threshold = 1.4 * signal_std
             
             # 3. 使用prominence参数确保只检测尖锐的峰（R峰）
             # prominence表示峰的突出度，R峰通常很尖锐
@@ -254,14 +254,14 @@ class PTTEstimator:
             
             peaks, properties = find_peaks(
                 signal,
-                # height=height_threshold,
+                height=height_threshold,
                 distance=min_distance,
                 prominence=prominence_threshold,
                 width=(1, max_width)
             )
         else:
             # rPPG峰检测：使用较宽松的参数
-            peaks, _ = find_peaks(signal, distance=min_distance)
+            peaks, _ = find_peaks(signal, distance=min_distance, height=0)
         
         return peaks
     
@@ -346,7 +346,7 @@ class DataSegment:
 
 
 class DataSlicer:
-    def __init__(self, segment_duration=5.0, target_fs=512):
+    def __init__(self, segment_duration=10.0, target_fs=512):
         self.segment_duration = segment_duration
         self.target_fs = target_fs
         self.interpolator = RPPGInterpolator()
@@ -485,7 +485,7 @@ class SegmentVisualizer:
         self.axes['rppg'].set_ylabel('rPPG', fontsize=12)
         
         # 标题包含PTT信息
-        ptt_str = f'PTT: {ptt*1000:.1f}ms' if ptt is not None else 'PTT: N/A'
+        ptt_str = f'PTT: {ptt*1000:.1f}ms from {len(matched_pairs)} pairs' if ptt is not None and len(matched_pairs) > 8 else 'PTT: N/A'
         self.axes['rppg'].set_title(
             f'Source: {segment.source_file} | Segment: {segment.segment_idx} | '
             f'Duration: {segment.get_duration():.2f}s | Points: {len(segment.time)} | {ptt_str}',
@@ -536,6 +536,15 @@ class SegmentVisualizer:
                 self.user_decision = 'reject'
                 break
         
+        return self.user_decision
+
+    def no_plot_show_segment(self, segment):
+        relative_time = segment.time - segment.time[0]
+        ptt, rppg_peaks, ecg_peaks, matched_pairs, ecg_filtered = self.ptt_estimator.estimate_ptt(
+                relative_time, segment.rppg, segment.ecg
+            )
+        self.user_decision = 'accept' if ptt is not None and len(matched_pairs) > 5 else 'reject'
+
         return self.user_decision
     
     def close(self):
@@ -602,7 +611,7 @@ class SegmentSaver:
 
 
 class DataSlicerPipeline:
-    def __init__(self, input_folder, output_folder, segment_duration=5.0, target_fs=512, 
+    def __init__(self, input_folder, output_folder, segment_duration=10.0, target_fs=512, 
                  starting_point=0, ending_point=None):
         self.input_folder = Path(input_folder)
         self.output_folder = output_folder
@@ -682,7 +691,8 @@ class DataSlicerPipeline:
             
             for seg_idx, segment in enumerate(segments, 1):
                 print(f"Segment {seg_idx}/{len(segments)} (File {file_idx}/{len(filtered_files)})...")
-                decision = self.visualizer.show_segment(segment)
+                # decision = self.visualizer.show_segment(segment)
+                decision = self.visualizer.no_plot_show_segment(segment)
                 
                 if decision == 'accept':
                     self.saver.save_segment(segment)
@@ -707,14 +717,15 @@ class DataSlicerPipeline:
 
 def main():
     input_folder = input("Enter input folder path: ").strip()
-    output_folder = input("Enter output folder path: ").strip()
+    output_folder = input("Enter output folder pat" \
+    "h: ").strip()
     
     try:
-        segment_duration = float(input("Enter segment duration in seconds (default 5.0): ").strip() or "5.0")
+        segment_duration = float(input("Enter segment duration in seconds (default 10.0): ").strip() or "10.0")
     except ValueError:
-        segment_duration = 5.0
-        print("Invalid input, using default 5.0 seconds")
-    
+        segment_duration = 10.0
+        print("Invalid input, using default 10.0 seconds")
+
     try:
         target_fs = int(input("Enter target sampling rate in Hz (default 512): ").strip() or "512")
     except ValueError:

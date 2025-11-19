@@ -100,13 +100,15 @@ class PatientStatistics:
         print(f"血压最小值：{np.min(low_bps)}/{np.min(high_bps)}")
     
 def main():
-    stats = PatientStatistics(raw_data_dir="./patient_data", cleaned_data_dir="./test_cleaned")
+    stats = PatientStatistics(raw_data_dir="./mirror2_data", cleaned_data_dir="./mirror2_cleaned")
+    """
     stats.hr_stat()
     stats.bp_stat()
     stats.count_raw_data_points()
     stats.count_cleaned_data_points()
     stats.overall_stat()
-    start_idx = 523
+    """
+    start_idx = 122
     stats.count_raw_data_points(start_idx=start_idx)
     stats.count_cleaned_data_points(start_idx=start_idx)
 
