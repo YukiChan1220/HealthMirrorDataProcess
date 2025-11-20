@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.interpolate import interp1d
 import csv
+import os
+import pandas as pd
 
 lab = False
 
@@ -38,11 +40,18 @@ def load_data_for_patients(patient_list, raw_dir=data_dir, cleaned_dir=cleaned_d
     return raw_data, cleaned_data
 
 def load_reference_waveforms(ref_dir):
-    reference_waveforms = {}
-    data_loader = DataLoader(cleaned_dir=ref_dir)
-    for patient_id, timestamps, rppg_signal, ecg_signal in data_loader.load_cleaned_data():
-        reference_waveforms[patient_id] = (timestamps, rppg_signal, ecg_signal)
-    return reference_waveforms
+    for f in os.listdir(ref_dir):
+        if f.endswith(".csv"):
+            try:
+                file_path = os.path.join(ref_dir, f)
+                df = pd.read_csv(file_path)
+                timestamps = df.loc[:, 'timestamps'].astype(float).to_numpy()
+                ecg_signal = df.loc[:, 'ecg'].astype(float).to_numpy()
+            except Exception as e:
+                print(f"Error reading {file_path}: {e}")
+                continue
+
+            yield int(f[4:7]), timestamps, ecg_signal
 
 def filter_signal(data, fs=512, lowcut=0.5, highcut=5.0, order=4):
     nyquist = 0.5 * fs
@@ -138,7 +147,7 @@ def ptt_signals(timestamps, rppg_signal, ecg_signal, peak=True, filter=True, fs=
     return None, None, None
 
 class RawSignalViewer:
-    def __init__(self, data_list, reference_waveform_list=None):
+    def __init__(self, data_list, reference_waveforms=None):
         self.data_list = data_list if data_list is not None else []
         self.current_raw_idx = 0
         self.current_clipped_idx = 0
@@ -219,12 +228,12 @@ class RawSignalViewer:
             seg_patient_id, seg_timestamps, seg_rppg, seg_ecg = self.clipped_segments[self.current_clipped_idx]
             filename = f"seg_{self.current_patient_id}_{self.current_raw_idx+1}_{self.current_clipped_idx + 1}.csv"
             target_length = 512
-            new_timestamps = np.linspace(0, 1, target_length)
+            new_timestamps = np.linspace(seg_timestamps[0], seg_timestamps[-1], target_length)
             resampled_ecg = interp1d(seg_timestamps, seg_ecg, kind='cubic', fill_value='extrapolate')(new_timestamps)
             csv_data = zip(new_timestamps, resampled_ecg)
             with open(filename, mode='w', newline='') as file:
                 writer = csv.writer(file)
-                writer.writerow(['timestamp', 'ecg_signal'])
+                writer.writerow(['timestamps', 'ecg'])
                 writer.writerows(csv_data)
             print(f"Saved clipped segment to {filename}")
             return
@@ -258,13 +267,29 @@ class RawSignalViewer:
         if self.current_clipped_idx < len(self.clipped_segments):
             seg_patient_id, seg_timestamps, seg_rppg, seg_ecg = self.clipped_segments[self.current_clipped_idx]
 
+            linear_sim = None
+            cosine_sim = None
+            if reference_waveforms is not None:
+                linear_sims = []
+                cosine_sims = []
+                target_length = 512
+                new_timestamps = np.linspace(seg_timestamps[0], seg_timestamps[-1], target_length)
+                resampled_ecg = interp1d(seg_timestamps, seg_ecg, kind='cubic', fill_value='extrapolate')(new_timestamps)
+                for patient_id, timestamps, ref_ecg in reference_waveforms:
+                    linear = np.corrcoef(resampled_ecg, ref_ecg)[0, 1]
+                    linear_sims.append((patient_id, linear))
+                    cosine = np.dot(resampled_ecg, ref_ecg) / (np.linalg.norm(resampled_ecg) * np.linalg.norm(ref_ecg))
+                    cosine_sims.append((patient_id, cosine))
+                linear_sim = np.mean([s[1] for s in linear_sims]) if linear_sims else -1.0
+                cosine_sim = np.mean([s[1] for s in cosine_sims]) if cosine_sims else -2.0
+
             self.axes[2].plot(seg_timestamps, seg_rppg, label='Clipped rPPG Signal')
             self.axes[2].plot(seg_timestamps, seg_ecg, label='Clipped ECG Signal')
             self.axes[2].set_xlabel('Time (s)')
             self.axes[2].set_ylabel('Amplitude')
             self.axes[2].legend()
             self.axes[2].grid(True, alpha=0.3)
-            self.axes[2].set_title(f'Clipped Segment {self.current_clipped_idx + 1}/{len(self.clipped_segments)} for Patient {seg_patient_id}')
+            self.axes[2].set_title(f'Clipped Segment {self.current_clipped_idx + 1}/{len(self.clipped_segments)}-Patient {seg_patient_id}. Linear: {linear_sim:.3f}, Cosine: {cosine_sim:.3f}')
         
         self.fig.suptitle("Press 'y' to accept, 'n' to reject, 'q' to quit, 'c' to view next segment, 'v' to save current segment", fontsize=12)
         self.fig.tight_layout()
@@ -278,8 +303,9 @@ class RawSignalViewer:
 if __name__ == '__main__':
     bp_patient_list = load_patient_with_bp()
     raw_data, cleaned_data = load_data_for_patients(bp_patient_list)
+    reference_waveforms = list(load_reference_waveforms('./reference_ecg'))
     
-    viewer = RawSignalViewer(list(cleaned_data))
+    viewer = RawSignalViewer(list(cleaned_data), reference_waveforms=reference_waveforms)
     ptt_results = viewer.show()
     
     print(f"\n\nTotal accepted: {len(ptt_results)}")

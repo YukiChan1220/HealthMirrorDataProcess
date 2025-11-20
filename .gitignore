@@ -13,4 +13,5 @@ rppg2ecg.onnx
 /test_sliced
 /mirror2_data
 /mirror2_cleaned
+/mirror4_data
 *.csv
