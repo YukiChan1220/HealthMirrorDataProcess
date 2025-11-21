@@ -3,90 +3,80 @@ import matplotlib.pyplot as plt
 import scipy.signal as signal
 import os
 import pandas as pd
-import threading
-from queue import Queue
-from abc import ABC, abstractmethod
+from matplotlib.widgets import Slider
 import global_vars
-
-mirror_version = global_vars.mirror_version
-
 
 class SignalData:
     def __init__(self, time=None, rppg=None, ecg=None, ppg_red=None, ppg_ir=None, ppg_green=None):
-        self.time = time if time is not None else []
-        self.rppg = rppg if rppg is not None else []
-        self.ecg = ecg if ecg is not None else []
-        self.ppg_red = ppg_red if ppg_red is not None else []
-        self.ppg_ir = ppg_ir if ppg_ir is not None else []
-        self.ppg_green = ppg_green if ppg_green is not None else []
+        self.time = np.array(time) if time is not None else np.array([])
+        self.rppg = np.array(rppg) if rppg is not None else np.array([])
+        self.ecg = np.array(ecg) if ecg is not None else np.array([])
+        self.ppg_red = np.array(ppg_red) if ppg_red is not None else np.array([])
+        self.ppg_ir = np.array(ppg_ir) if ppg_ir is not None else np.array([])
+        self.ppg_green = np.array(ppg_green) if ppg_green is not None else np.array([])
 
     def get_signal(self, signal_name):
-        return getattr(self, signal_name, [])
+        return getattr(self, signal_name, np.array([]))
 
     def has_ppg(self):
         return len(self.ppg_red) > 0 or len(self.ppg_ir) > 0 or len(self.ppg_green) > 0
 
+class DataLoader:
+    def __init__(self, version):
+        self.version = version
 
-class DataLoader(ABC):
-    @abstractmethod
     def load(self, data_path):
-        pass
+        if self.version == '1':
+            return self._load_v1(data_path)
+        else:
+            return self._load_v2(data_path)
 
-
-class MirrorV1Loader(DataLoader):
-    def load(self, data_path):
-        try:
-            time, rppg, ecg = [], [], []
-            with open(os.path.join(data_path, 'merged_log.csv'), 'r') as f:
-                lines = f.readlines()
-                for line in lines[1:]:
-                    parts = line.strip().split(',')
-                    if len(parts) >= 3:
-                        time.append(float(parts[0]))
-                        rppg.append(float(parts[1]) if parts[1] != '' else 0.0)
-                        ecg.append(float(parts[2]) if parts[2] != '' else 0.0)
-            return SignalData(time=time, rppg=rppg, ecg=ecg)
-        except Exception as e:
-            print(f"Error loading {data_path}: {e}")
+    def _load_v1(self, data_path):
+        time, rppg, ecg = [], [], []
+        file_path = os.path.join(data_path, 'merged_log.csv')
+        if not os.path.exists(file_path):
             return SignalData()
+            
+        with open(file_path, 'r') as f:
+            lines = f.readlines()
+            for line in lines[1:]:
+                parts = line.strip().split(',')
+                if len(parts) >= 3:
+                    time.append(float(parts[0]))
+                    rppg.append(float(parts[1]) if parts[1] != '' else 0.0)
+                    ecg.append(float(parts[2]) if parts[2] != '' else 0.0)
+        return SignalData(time=time, rppg=rppg, ecg=ecg)
 
-
-class MirrorV2Loader(DataLoader):
-    def load(self, data_path):
-        try:
-            df = pd.read_csv(os.path.join(data_path, 'normalized_log.csv'), dtype=float)
-            return SignalData(
-                time=df['timestamp'].tolist(),
-                rppg=df['rppg'].tolist(),
-                ecg=df['ecg'].tolist(),
-                ppg_red=df['ppg_red'].tolist(),
-                ppg_ir=df['ppg_ir'].tolist(),
-                ppg_green=df['ppg_green'].tolist()
-            )
-        except Exception as e:
-            print(f"Error loading {data_path}: {e}")
+    def _load_v2(self, data_path):
+        file_path = os.path.join(data_path, 'normalized_log.csv')
+        if not os.path.exists(file_path):
             return SignalData()
-
+            
+        df = pd.read_csv(file_path, dtype=float)
+        return SignalData(
+            time=df['timestamp'].tolist(),
+            rppg=df['rppg'].tolist(),
+            ecg=df['ecg'].tolist(),
+            ppg_red=df['ppg_red'].tolist(),
+            ppg_ir=df['ppg_ir'].tolist(),
+            ppg_green=df['ppg_green'].tolist()
+        )
 
 class SignalCleaner:
     def __init__(self, fs=512):
         self.fs = fs
 
     def clean(self, sig, config):
-        sig = np.array(sig)
-        mask = np.ones(len(sig), dtype=bool)
-        
         if len(sig) == 0:
-            mask[:] = False
-            return mask
-
+            return np.array([], dtype=bool)
+        
+        mask = np.ones(len(sig), dtype=bool)
         if "std" in config:
             mask &= self._std_filter(sig, config["std"])
         if "diff" in config:
             mask &= self._diff_filter(sig, config["diff"])
         if "welch" in config:
             mask &= self._welch_filter(sig, config["welch"])
-        
         return mask
 
     def _std_filter(self, sig, params):
@@ -97,8 +87,7 @@ class SignalCleaner:
         
         for start in range(0, len(sig) - window_len, window_len):
             seg = sig[start:start + window_len]
-            seg_std = np.std(seg)
-            if seg_std > global_std * threshold:
+            if np.std(seg) > global_std * threshold:
                 mask[start:start + window_len] = False
         return mask
 
@@ -110,8 +99,7 @@ class SignalCleaner:
         
         for start in range(0, len(sig) - window_len, window_len):
             seg = sig[start:start + window_len]
-            seg_diff = np.max(seg) - np.min(seg)
-            if seg_diff > global_diff * threshold:
+            if (np.max(seg) - np.min(seg)) > global_diff * threshold:
                 mask[start:start + window_len] = False
         return mask
 
@@ -125,244 +113,15 @@ class SignalCleaner:
         for start in range(0, len(sig) - window_len, window_len):
             seg = sig[start:start + window_len]
             f, Pxx = signal.welch(seg, fs=self.fs, nperseg=window_len)
-            seg_peak_freq = f[np.argmax(Pxx)]
-            if abs(seg_peak_freq - peak_freq) > freq_tolerance:
+            if abs(f[np.argmax(Pxx)] - peak_freq) > freq_tolerance:
                 mask[start:start + window_len] = False
         return mask
-
-
-class DataProcessor:
-    def __init__(self, fs=512):
-        self.fs = fs
-        self.loader = MirrorV1Loader() if mirror_version == '1' else MirrorV2Loader()
-        self.cleaner = SignalCleaner(fs)
-        self.data = SignalData()
-        self.masks = {}
-
-    def load_data(self, data_path):
-        self.data = self.loader.load(data_path)
-        self.masks = {}
-
-    def update_signal_mask(self, signal_name, config):
-        sig = self.data.get_signal(signal_name)
-        self.masks[signal_name] = self.cleaner.clean(sig, config)
-        return self.masks[signal_name]
-
-    def get_combined_mask(self, signal_names):
-        if not self.masks:
-            return np.ones(len(self.data.time), dtype=bool)
-        mask = np.ones(len(self.data.time), dtype=bool)
-        for name in signal_names:
-            if name in self.masks:
-                mask &= self.masks[name]
-        return mask
-
-
-class PlotterBase(ABC):
-    def __init__(self, plot_event, plot_update_event):
-        self.data = SignalData()
-        self.masks = {}
-        self.signal_queue = None
-        self.config_queue = None
-        self.event_queue = None
-        self.configs = {}
-        self.fig = None
-        self.axes = {}
-        self.sliders = {}
-        self.buttons = {}
-        self.event = plot_event
-        self.plot_update_event = plot_update_event
-        self._init_plot()
-
-    @abstractmethod
-    def _init_plot(self):
-        pass
-
-    @abstractmethod
-    def _get_signal_names(self):
-        pass
-
-    def _plot_signals(self):
-        for name, ax in self.axes.items():
-            ax.clear()
-            sig = self.data.get_signal(name)
-            ax.plot(self.data.time, sig, label=f'{name.upper()} Signal')
-            
-            if name in self.masks and hasattr(self, 'show_mask') and self.show_mask:
-                ax.fill_between(self.data.time, sig, where=~self.masks[name], 
-                               color='red', alpha=0.5, label='Marked Artifacts')
-            
-            ax.set_xlabel('Time')
-            ax.set_ylabel('Amplitude')
-            ax.set_title(f'{name.upper()} Signal')
-            ax.legend()
-            ax.grid()
-        plt.draw()
-
-    def update_once(self):
-        if not self.plot_update_event.is_set():
-            return
-        try:
-            from queue import Empty
-            item = self.signal_queue.get_nowait()
-            self._process_queue_item(item)
-            self._plot_signals()
-            self.plot_update_event.clear()
-        except Empty:
-            return
-
-    @abstractmethod
-    def _process_queue_item(self, item):
-        pass
-
-    def __call__(self, signal_queue, config_queue=None, event_queue=None):
-        self.signal_queue = signal_queue
-        self.config_queue = config_queue
-        self.event_queue = event_queue
-
-
-class RawDataPlotter(PlotterBase):
-    def __init__(self, plot_event, plot_update_event):
-        self.show_mask = True
-        super().__init__(plot_event, plot_update_event)
-
-    def _get_signal_names(self):
-        if mirror_version == '2':
-            return ['ecg', 'rppg', 'ppg_red', 'ppg_ir', 'ppg_green']
-        return ['ecg', 'rppg']
-
-    def _init_plot(self):
-        plt.ion()
-        signal_names = self._get_signal_names()
-        n_signals = len(signal_names)
-        
-        self.fig, axes_list = plt.subplots(n_signals, 1, figsize=(20, 4 * n_signals))
-        if n_signals == 1:
-            axes_list = [axes_list]
-        
-        for i, name in enumerate(signal_names):
-            self.axes[name] = axes_list[i]
-        
-        plt.subplots_adjust(bottom=0.12)
-        
-        ax_accept = plt.axes([0.81, 0.02, 0.08, 0.03])
-        ax_reject = plt.axes([0.90, 0.02, 0.08, 0.03])
-        self.buttons['accept'] = plt.Button(ax_accept, 'Accept')
-        self.buttons['reject'] = plt.Button(ax_reject, 'Reject')
-        self.buttons['accept'].on_clicked(lambda e: self._button_handler(e, 'raw_accept'))
-        self.buttons['reject'].on_clicked(lambda e: self._button_handler(e, 'raw_reject'))
-        
-        if mirror_version == '2':
-            slider_configs = [
-                ('ecg_std', 'ECG STD', 0.02, 0.02, 0.12, 0.03),
-                ('rppg_std', 'RPPG STD', 0.15, 0.02, 0.12, 0.03),
-                ('rppg_bpm', 'RPPG BPM', 0.28, 0.02, 0.12, 0.03),
-                ('ppg_red_std', 'PPG Red', 0.41, 0.02, 0.12, 0.03),
-                ('ppg_ir_std', 'PPG IR', 0.54, 0.02, 0.12, 0.03),
-                ('ppg_green_std', 'PPG Green', 0.67, 0.02, 0.12, 0.03)
-            ]
-        else:
-            slider_configs = [
-                ('ecg_std', 'ECG STD', 0.05, 0.02, 0.15, 0.03),
-                ('rppg_std', 'RPPG STD', 0.25, 0.02, 0.15, 0.03),
-                ('rppg_bpm', 'RPPG BPM', 0.45, 0.02, 0.15, 0.03)
-            ]
-        
-        for name, label, left, bottom, width, height in slider_configs:
-            label_ax = plt.axes([left, bottom + height + 0.005, width, 0.02])
-            label_ax.axis('off')
-            label_ax.text(0.5, 0.5, label, ha='center', va='center', 
-                         fontsize=9, fontweight='bold', transform=label_ax.transAxes)
-            
-            ax = plt.axes([left, bottom, width, height])
-            if 'std' in name:
-                vmin, vmax, vinit, step = 0.5, 3.0, 1.5, 0.1
-            else:
-                vmin, vmax, vinit, step = 5, 30, 15, 1
-            self.sliders[name] = plt.Slider(ax, '', vmin, vmax, 
-                                           valinit=vinit, valstep=step)
-            self.sliders[name].on_changed(lambda val, n=name: self._slider_handler(val, n))
-        
-        self.configs = {
-            'ecg': {'std': {'window_size': 1, 'threshold': 1.5}},
-            'rppg': {'std': {'window_size': 1, 'threshold': 1.5}, 
-                    'welch': {'window_size': 5, 'bpm_tolerance': 15}}
-        }
-        
-        if mirror_version == '2':
-            for sig in ['ppg_red', 'ppg_ir', 'ppg_green']:
-                self.configs[sig] = {'std': {'window_size': 1, 'threshold': 1.5}}
-
-    def _button_handler(self, event, event_name):
-        self.event.set()
-        self.event_queue.put(event_name)
-
-    def _slider_handler(self, val, slider_name):
-        if slider_name == 'ecg_std':
-            self.configs['ecg']['std']['threshold'] = val
-        elif slider_name == 'rppg_std':
-            self.configs['rppg']['std']['threshold'] = val
-        elif slider_name == 'rppg_bpm':
-            self.configs['rppg']['welch']['bpm_tolerance'] = val
-        elif slider_name == 'ppg_red_std':
-            self.configs['ppg_red']['std']['threshold'] = val
-        elif slider_name == 'ppg_ir_std':
-            self.configs['ppg_ir']['std']['threshold'] = val
-        elif slider_name == 'ppg_green_std':
-            self.configs['ppg_green']['std']['threshold'] = val
-        
-        self.config_queue.put(self.configs.copy())
-        self.event.set()
-        self.event_queue.put('raw_update')
-
-    def _process_queue_item(self, item):
-        self.data, self.masks = item
-
-
-class CleanedDataPlotter(PlotterBase):
-    def __init__(self, plot_event, plot_update_event):
-        self.show_mask = False
-        super().__init__(plot_event, plot_update_event)
-
-    def _get_signal_names(self):
-        if mirror_version == '2':
-            return ['ecg', 'rppg', 'ppg_red', 'ppg_ir', 'ppg_green']
-        return ['ecg', 'rppg']
-
-    def _init_plot(self):
-        plt.ion()
-        signal_names = self._get_signal_names()
-        n_signals = len(signal_names)
-        
-        self.fig, axes_list = plt.subplots(n_signals, 1, figsize=(20, 4 * n_signals))
-        if n_signals == 1:
-            axes_list = [axes_list]
-        
-        for i, name in enumerate(signal_names):
-            self.axes[name] = axes_list[i]
-        
-        plt.subplots_adjust(bottom=0.12)
-        
-        ax_reverse = plt.axes([0.65, 0.02, 0.1, 0.03])
-        ax_accept = plt.axes([0.76, 0.02, 0.1, 0.03])
-        ax_reject = plt.axes([0.87, 0.02, 0.1, 0.03])
-        self.buttons['reverse'] = plt.Button(ax_reverse, 'Reverse')
-        self.buttons['accept'] = plt.Button(ax_accept, 'Accept')
-        self.buttons['reject'] = plt.Button(ax_reject, 'Reject')
-        self.buttons['reverse'].on_clicked(lambda e: self._button_handler(e, 'cleaned_reverse'))
-        self.buttons['accept'].on_clicked(lambda e: self._button_handler(e, 'cleaned_accept'))
-        self.buttons['reject'].on_clicked(lambda e: self._button_handler(e, 'cleaned_reject'))
-    def _button_handler(self, event, event_name):
-        self.event.set()
-        self.event_queue.put(event_name)
-
-    def _process_queue_item(self, item):
-        self.data = item
-
 
 class DataLogger:
     def __init__(self, log_path):
         self.log_path = log_path
+        if not os.path.exists(log_path):
+            os.makedirs(log_path)
 
     def log_cleaned_data(self, file_name, data, masks):
         signal_names = ['rppg', 'ecg']
@@ -374,28 +133,22 @@ class DataLogger:
             if name in masks:
                 combined_mask &= masks[name]
         
-        clean_windows = self._find_clean_windows(combined_mask)
-        
-        file_idx = 0
-        for start, end in clean_windows:
-            if start < end:
-                self._save_window(file_name, file_idx, data, signal_names, start, end)
-                file_idx += 1
+        windows = self._find_clean_windows(combined_mask)
+        for idx, (start, end) in enumerate(windows):
+            self._save_window(file_name, idx, data, signal_names, start, end)
 
     def _find_clean_windows(self, mask):
         windows = []
-        window_begin = 0
-        window_end = 0
-        
-        while window_begin < len(mask):
-            if mask[window_begin]:
-                while window_end < len(mask) and mask[window_end]:
-                    window_end += 1
-                windows.append((window_begin, window_end))
-            if window_end <= window_begin:
-                window_end = window_begin + 1
-            window_begin = window_end + 1
-        
+        start = 0
+        while start < len(mask):
+            if mask[start]:
+                end = start
+                while end < len(mask) and mask[end]:
+                    end += 1
+                windows.append((start, end))
+                start = end
+            else:
+                start += 1
         return windows
 
     def _save_window(self, file_name, idx, data, signal_names, start, end):
@@ -404,213 +157,290 @@ class DataLogger:
         
         df_dict = {'Time': data.time[start:end]}
         for name in signal_names:
-            sig = data.get_signal(name)
-            df_dict[name] = sig[start:end]
+            df_dict[name] = data.get_signal(name)[start:end]
         
-        df = pd.DataFrame(df_dict)
-        df.to_csv(output_path, index=False)
+        pd.DataFrame(df_dict).to_csv(output_path, index=False)
 
-    def modify_cleaned_data(self, file_path, option):
-        try:
-            full_path = os.path.join(self.log_path, file_path)
-            
-            if option == 'reject':
-                os.remove(full_path)
-                return
-            
-            df = pd.read_csv(full_path)
-            
-            if option == 'reverse':
-                for col in df.columns:
-                    if col != 'Time' and 'ecg' in col.lower():
-                        df[col] = -df[col]
-            
+    def modify_cleaned_data(self, file_name, option):
+        full_path = os.path.join(self.log_path, file_name)
+        if not os.path.exists(full_path):
+            return
+
+        if option == 'reject':
+            os.remove(full_path)
+            return
+
+        df = pd.read_csv(full_path)
+        if option == 'reverse':
             for col in df.columns:
-                if col != 'Time':
-                    df[col] = (df[col] - df[col].mean()) / df[col].std()
-            
-            df.to_csv(full_path, index=False)
-            
-        except Exception as e:
-            print(f"Error {option} {file_path}: {e}")
-
-
-
-class Pipeline:
-    def __init__(self):
-        self.data_processor = None
-        self.data_plotter = None
-        self.data_logger = None
-        self.signal_queue = Queue()
-        self.config_queue = Queue()
-        self.event_queue = Queue()
-        self.plot_event = threading.Event()
-        self.update_event = threading.Event()
-        self.plot_event.set()
-
-    def start_cleaning(self, data_path, log_path, starting_point=0, ending_point=None):
-        self.data_processor = DataProcessor()
-        self.data_plotter = RawDataPlotter(self.plot_event, self.update_event)
-        self.data_plotter(self.signal_queue, self.config_queue, self.event_queue)
-        self.data_logger = DataLogger(log_path)
-
-        if not os.path.exists(log_path):
-            os.makedirs(log_path)
+                if 'ecg' in col.lower():
+                    df[col] = -df[col]
         
-        for path in sorted(os.listdir(data_path)):
-            if global_vars.user_interrupt:
-                break
+        # Normalize
+        for col in df.columns:
+            if col != 'Time':
+                df[col] = (df[col] - df[col].mean()) / df[col].std()
+        
+        df.to_csv(full_path, index=False)
+
+class WashDataUI:
+    def __init__(self, mode='cleaning', version='1'):
+        self.mode = mode
+        self.version = version
+        self.fig = None
+        self.axes = {}
+        self.sliders = {}
+        self.callbacks = {}
+        self.signal_names = self._get_signal_names()
+        self._init_plot()
+
+    def _get_signal_names(self):
+        if self.version == '2':
+            return ['ecg', 'rppg', 'ppg_red', 'ppg_ir', 'ppg_green']
+        return ['ecg', 'rppg']
+
+    def _init_plot(self):
+        n_signals = len(self.signal_names)
+        self.fig, axes_list = plt.subplots(n_signals, 1, figsize=(16, 3 * n_signals))
+        if n_signals == 1: axes_list = [axes_list]
+        
+        for i, name in enumerate(self.signal_names):
+            self.axes[name] = axes_list[i]
+        
+        plt.subplots_adjust(bottom=0.2 if self.mode == 'cleaning' else 0.1)
+        self.fig.canvas.mpl_connect('key_press_event', self._on_key)
+        
+        if self.mode == 'cleaning':
+            self._init_sliders()
+            self.fig.suptitle("Controls: 'y' Accept, 'n' Reject, 'q' Quit", fontsize=12)
+        else:
+            self.fig.suptitle("Controls: 'y' Accept, 'n' Reject, 'r' Reverse, 'q' Quit", fontsize=12)
+
+    def _init_sliders(self):
+        slider_configs = []
+        if self.version == '2':
+            slider_configs = [
+                ('ecg_std', 'ECG STD', 0.05, 0.02, 0.12, 0.03),
+                ('rppg_std', 'RPPG STD', 0.20, 0.02, 0.12, 0.03),
+                ('rppg_bpm', 'RPPG BPM', 0.35, 0.02, 0.12, 0.03),
+                ('ppg_red_std', 'Red STD', 0.50, 0.02, 0.12, 0.03),
+                ('ppg_ir_std', 'IR STD', 0.65, 0.02, 0.12, 0.03),
+                ('ppg_green_std', 'Green STD', 0.80, 0.02, 0.12, 0.03)
+            ]
+        else:
+            slider_configs = [
+                ('ecg_std', 'ECG STD', 0.1, 0.05, 0.2, 0.03),
+                ('rppg_std', 'RPPG STD', 0.4, 0.05, 0.2, 0.03),
+                ('rppg_bpm', 'RPPG BPM', 0.7, 0.05, 0.2, 0.03)
+            ]
+
+        for name, label, left, bottom, width, height in slider_configs:
+            ax = plt.axes([left, bottom, width, height])
+            vmin, vmax, vinit, step = (0.5, 3.0, 1.5, 0.1) if 'std' in name else (5, 30, 15, 1)
+            slider = Slider(ax, label, vmin, vmax, valinit=vinit, valstep=step)
+            slider.on_changed(lambda val, n=name: self._on_slider_change(n, val))
+            self.sliders[name] = slider
+
+    def update_plot(self, data, masks=None, title_suffix=""):
+        for name in self.signal_names:
+            ax = self.axes[name]
+            ax.clear()
+            sig = data.get_signal(name)
+            if len(sig) == 0: continue
+            
+            ax.plot(data.time, sig, label=f'{name.upper()}')
+            
+            if masks and name in masks:
+                ax.fill_between(data.time, sig, where=~masks[name], color='red', alpha=0.3, label='Artifact')
+            
+            ax.set_title(f'{name.upper()} Signal {title_suffix}')
+            ax.legend(loc='upper right')
+            ax.grid(True, alpha=0.3)
+        self.fig.canvas.draw()
+
+    def get_config(self):
+        config = {
+            'ecg': {'std': {'window_size': 1, 'threshold': 1.5}},
+            'rppg': {'std': {'window_size': 1, 'threshold': 1.5}, 
+                    'welch': {'window_size': 5, 'bpm_tolerance': 15}}
+        }
+        if self.version == '2':
+            for sig in ['ppg_red', 'ppg_ir', 'ppg_green']:
+                config[sig] = {'std': {'window_size': 1, 'threshold': 1.5}}
+
+        for name, slider in self.sliders.items():
+            val = slider.val
+            if name == 'ecg_std': config['ecg']['std']['threshold'] = val
+            elif name == 'rppg_std': config['rppg']['std']['threshold'] = val
+            elif name == 'rppg_bpm': config['rppg']['welch']['bpm_tolerance'] = val
+            elif name == 'ppg_red_std': config['ppg_red']['std']['threshold'] = val
+            elif name == 'ppg_ir_std': config['ppg_ir']['std']['threshold'] = val
+            elif name == 'ppg_green_std': config['ppg_green']['std']['threshold'] = val
+        return config
+
+    def on_action(self, callback):
+        self.callbacks['action'] = callback
+
+    def on_config_change(self, callback):
+        self.callbacks['config'] = callback
+
+    def _on_key(self, event):
+        if event.key in ['y', 'n', 'r', 'q'] and 'action' in self.callbacks:
+            self.callbacks['action'](event.key)
+
+    def _on_slider_change(self, name, val):
+        if 'config' in self.callbacks:
+            self.callbacks['config']()
+
+class WashDataController:
+    def __init__(self, data_path, log_path, start=0, end=None):
+        self.data_path = data_path
+        self.log_path = log_path
+        self.start = start
+        self.end = end
+        self.version = global_vars.mirror_version
+        self.loader = DataLoader(self.version)
+        self.cleaner = SignalCleaner()
+        self.logger = DataLogger(log_path)
+        self.ui = None
+        self.files = []
+        self.current_idx = 0
+        self.current_data = None
+
+    def run_cleaning(self):
+        self.files = self._get_files(self.data_path, raw=True)
+        if not self.files:
+            print("No files to process.")
+            return
+
+        self.ui = WashDataUI(mode='cleaning', version=self.version)
+        self.ui.on_action(self._handle_cleaning_action)
+        self.ui.on_config_change(self._update_cleaning_view)
+        
+        self._load_next_raw()
+        plt.show(block=True)
+
+    def run_checking(self):
+        self.files = self._get_files(self.log_path, raw=False)
+        if not self.files:
+            print("No cleaned files to check.")
+            return
+
+        self.ui = WashDataUI(mode='checking', version=self.version)
+        self.ui.on_action(self._handle_checking_action)
+        
+        self._load_next_cleaned()
+        plt.show(block=True)
+
+    def _get_files(self, path, raw=True):
+        files = []
+        if not os.path.exists(path): return []
+        
+        for f in sorted(os.listdir(path)):
+            if raw and not os.path.isdir(os.path.join(path, f)): continue
+            if not raw and not f.endswith('.csv'): continue
             
             try:
-                patient_num = int(path.split('_')[-1])
-            except (ValueError, IndexError):
-                continue
-            
-            if patient_num < starting_point or (ending_point is not None and patient_num > ending_point):
-                continue
-            
-            self.data_processor.load_data(os.path.join(data_path, path))
-            print(f"Processing patient {path}...")
-            
-            signal_names = ['rppg', 'ecg']
-            if self.data_processor.data.has_ppg():
-                signal_names.extend(['ppg_red', 'ppg_ir', 'ppg_green'])
-            
-            configs = self.data_plotter.configs.copy()
-            masks = {}
-            for name in signal_names:
-                if name in configs:
-                    masks[name] = self.data_processor.update_signal_mask(name, configs[name])
-            
-            self.signal_queue.put((self.data_processor.data, masks))
-            self.update_event.set()
-            self.data_plotter.update_once()
-            plt.pause(0.01)
+                pid = int(f.split('_')[-1] if raw else f.split('_')[1])
+                if pid < self.start or (self.end is not None and pid > self.end):
+                    continue
+                files.append(f)
+            except: continue
+        return files
 
-            while not global_vars.user_interrupt:
-                plt.pause(0.01)
-                self.data_plotter.update_once()
-                
-                if not self.event_queue.empty():
-                    event = self.event_queue.get()
-                    
-                    if event == 'raw_reject':
-                        break
-                    elif event == 'raw_update':
-                        if not self.config_queue.empty():
-                            configs = self.config_queue.get()
-                        
-                        masks = {}
-                        for name in signal_names:
-                            if name in configs:
-                                masks[name] = self.data_processor.update_signal_mask(name, configs[name])
-                        
-                        self.signal_queue.put((self.data_processor.data, masks))
-                        self.update_event.set()
-                    elif event == 'raw_accept':
-                        if not self.config_queue.empty():
-                            configs = self.config_queue.get()
-                        
-                        masks = {}
-                        for name in signal_names:
-                            if name in configs:
-                                masks[name] = self.data_processor.update_signal_mask(name, configs[name])
-                        
-                        self.data_logger.log_cleaned_data(f'{path}.csv', self.data_processor.data, masks)
-                        break
-                    else:
-                        print(f"Error: Unknown event {event}")
-        
-        plt.close('all')
+    def _load_next_raw(self):
+        if self.current_idx >= len(self.files):
+            print("All files processed.")
+            plt.close('all')
+            return
 
-    def start_checking_cleaning(self, log_path, starting_point=0, ending_point=None):
-        self.data_plotter = CleanedDataPlotter(self.plot_event, self.update_event)
-        self.data_plotter(self.signal_queue, event_queue=self.event_queue)
-        self.data_logger = DataLogger(log_path)
+        file_name = self.files[self.current_idx]
+        print(f"Processing {file_name} ({self.current_idx + 1}/{len(self.files)})...")
+        self.current_data = self.loader.load(os.path.join(self.data_path, file_name))
+        self._update_cleaning_view()
 
-        if not os.path.exists(log_path):
-            print(f"Error: Log path {log_path} does not exist")
+    def _update_cleaning_view(self):
+        if self.current_data is None: return
+        config = self.ui.get_config()
+        masks = {}
+        for name in self.ui.signal_names:
+            if name in config:
+                masks[name] = self.cleaner.clean(self.current_data.get_signal(name), config[name])
+        self.ui.update_plot(self.current_data, masks, title_suffix=f"- {self.files[self.current_idx]}")
+
+    def _handle_cleaning_action(self, action):
+        if action == 'q':
+            plt.close('all')
             return
         
-        for file in sorted(os.listdir(log_path)):
-            if global_vars.user_interrupt:
-                break
-            
-            if not file.endswith('.csv'):
-                continue
-            
-            try:
-                patient_num = int(file.split('_')[1])
-            except (ValueError, IndexError):
-                continue
-            
-            if patient_num < starting_point or (ending_point is not None and patient_num > ending_point):
-                continue
-            
-            print(f"Checking cleaned data {file}...")
-
-            try:
-                df = pd.read_csv(os.path.join(log_path, file))
-                
-                data = SignalData()
-                data.time = df['Time'].tolist()
-                
-                for col in df.columns:
-                    col_lower = col.lower()
-                    if 'rppg' in col_lower:
-                        data.rppg = ((df[col] - df[col].mean()) / df[col].std()).tolist()
-                    elif 'ecg' in col_lower:
-                        data.ecg = ((df[col] - df[col].mean()) / df[col].std()).tolist()
-                    elif 'ppg_red' in col_lower or 'red' in col_lower:
-                        data.ppg_red = ((df[col] - df[col].mean()) / df[col].std()).tolist()
-                    elif 'ppg_ir' in col_lower or col_lower == 'ir':
-                        data.ppg_ir = ((df[col] - df[col].mean()) / df[col].std()).tolist()
-                    elif 'ppg_green' in col_lower or 'green' in col_lower:
-                        data.ppg_green = ((df[col] - df[col].mean()) / df[col].std()).tolist()
-                
-                self.signal_queue.put(data)
-                self.update_event.set()
-                self.data_plotter.update_once()
-                plt.pause(0.01)
-
-                while not global_vars.user_interrupt:
-                    plt.pause(0.01)
-                    self.data_plotter.update_once()
-                    
-                    if not self.event_queue.empty():
-                        event = self.event_queue.get()
-                        
-                        if event == 'cleaned_accept':
-                            break
-                        elif event == 'cleaned_reject':
-                            self.data_logger.modify_cleaned_data(file, 'reject')
-                            break
-                        elif event == 'cleaned_reverse':
-                            self.data_logger.modify_cleaned_data(file, 'reverse')
-                            break
-                        else:
-                            print(f"Error: Unknown event {event}")
-            
-            except Exception as e:
-                print(f"Error loading {file}: {e}")
+        if action == 'y':
+            config = self.ui.get_config()
+            masks = {}
+            for name in self.ui.signal_names:
+                if name in config:
+                    masks[name] = self.cleaner.clean(self.current_data.get_signal(name), config[name])
+            self.logger.log_cleaned_data(f'{self.files[self.current_idx]}.csv', self.current_data, masks)
         
-        plt.close('all')
+        self.current_idx += 1
+        self._load_next_raw()
 
+    def _load_next_cleaned(self):
+        if self.current_idx >= len(self.files):
+            print("All files checked.")
+            plt.close('all')
+            return
+
+        file_name = self.files[self.current_idx]
+        print(f"Checking {file_name} ({self.current_idx + 1}/{len(self.files)})...")
+        
+        df = pd.read_csv(os.path.join(self.log_path, file_name))
+        data = SignalData(time=df['Time'].tolist())
+        
+        # Normalize for display
+        for col in df.columns:
+            if col == 'Time': continue
+            norm_sig = (df[col] - df[col].mean()) / df[col].std()
+            if 'rppg' in col.lower(): data.rppg = norm_sig.tolist()
+            elif 'ecg' in col.lower(): data.ecg = norm_sig.tolist()
+            elif 'red' in col.lower(): data.ppg_red = norm_sig.tolist()
+            elif 'ir' in col.lower(): data.ppg_ir = norm_sig.tolist()
+            elif 'green' in col.lower(): data.ppg_green = norm_sig.tolist()
+            
+        self.current_data = data
+        self.ui.update_plot(data, title_suffix=f"- {file_name}")
+
+    def _handle_checking_action(self, action):
+        if action == 'q':
+            plt.close('all')
+            return
+            
+        file_name = self.files[self.current_idx]
+        if action == 'n':
+            self.logger.modify_cleaned_data(file_name, 'reject')
+        elif action == 'r':
+            self.logger.modify_cleaned_data(file_name, 'reverse')
+        
+        self.current_idx += 1
+        self._load_next_cleaned()
 
 def main():
     data_path = input("Input data path:").strip()
     log_path = input("Input log path:").strip()
-    starting_point = input("Input starting point (default 0):").strip()
-    ending_point = input("Input ending point (default None):").strip()
-    starting_point = int(starting_point) if starting_point.isdigit() else 0
-    ending_point = int(ending_point) if ending_point.isdigit() else None
+    start = input("Input starting point (default 0):").strip()
+    end = input("Input ending point (default None):").strip()
     
-    pipeline = Pipeline()
-    pipeline.start_cleaning(data_path=data_path, log_path=log_path, 
-                           starting_point=starting_point, ending_point=ending_point)
-    pipeline.start_checking_cleaning(log_path=log_path, 
-                                     starting_point=starting_point, ending_point=ending_point)
-
+    start = int(start) if start.isdigit() else 0
+    end = int(end) if end.isdigit() else None
+    
+    app = WashDataController(data_path, log_path, start, end)
+    
+    print("\n--- Starting Cleaning Phase ---")
+    app.run_cleaning()
+    
+    # Reset for checking phase
+    app.current_idx = 0
+    print("\n--- Starting Checking Phase ---")
+    app.run_checking()
 
 if __name__ == "__main__":
     main()
