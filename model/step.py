@@ -23,8 +23,6 @@ class Step(ModelBase):
 
     def __call__(self, preprocess_queue: Queue, result_queue: Queue):
         while not inference_vars.inference_completed and not global_vars.user_interrupt:
-            # TODO: Calculate `dt` dynamically: examine the implement
-
             try:
                 frame, timestamp = preprocess_queue.get(timeout=1)
                 if self.last_timestamp is None:
