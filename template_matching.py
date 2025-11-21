@@ -7,6 +7,8 @@ from scipy.interpolate import interp1d
 import csv
 import os
 import pandas as pd
+import neurokit2 as nk
+from ecg.ecg_process import ECGProcess
 
 lab = False
 
@@ -61,46 +63,16 @@ def filter_signal(data, fs=512, lowcut=0.5, highcut=5.0, order=4):
     data = signal.filtfilt(b, a, data)
     return data
 
-def ecg_peak_pantompkins(ecg_signal, fs=512):
-    filtered_ecg = filter_signal(ecg_signal, fs=fs, lowcut=5.0, highcut=15.0, order=2)
-    derivative_ecg = np.gradient(filtered_ecg)
-    squared_ecg = np.square(derivative_ecg)
-    
-    window_size = int(0.150 * fs)
-    pantompkins = np.convolve(squared_ecg, np.ones(window_size)/window_size, mode='same')
-    pantompkins = 2 * pantompkins / np.max(pantompkins)
-    
-    signal_std = np.std(pantompkins)
-    pt_peaks, _ = signal.find_peaks(
-        pantompkins,
-        distance=int(fs * 0.35),
-        prominence=0.1 * signal_std,
-    )
-
-    peaks = []
-    for peak in pt_peaks:
-        left = max(0, peak - int(0.1 * fs))
-        right = min(len(ecg_signal), peak + int(0.1 * fs))
-        p = np.argmax(ecg_signal[left:right]) + left
-        peaks.append(p)
-    
-    print(f"Detected {len(peaks)}/{len(pt_peaks)} ECG peaks using Pan-Tompkins algorithm.")
-    return peaks, pantompkins, pt_peaks
-
-def find_peaks_new(signal_data, signal_type='rppg', fs=512, min_distance=None):
+def find_rppg_peaks(signal_data, fs=512, min_distance=None):
     if min_distance is None:
         min_distance = int(fs * 0.35)
-    
-    if signal_type == 'ecg':
-        peaks, pantompkins, pt_peaks = ecg_peak_pantompkins(signal_data, fs=fs)
-        return peaks, pantompkins, pt_peaks
-    else:
-        peaks, properties = signal.find_peaks(signal_data, distance=min_distance, height=0)
-        return peaks, properties
+    peaks, properties = signal.find_peaks(signal_data, distance=min_distance, height=0)
+    return peaks
 
-def calculate_ptt_new(time, rppg_signal, ecg_signal):
-    rppg_peaks, _ = find_peaks_new(rppg_signal, signal_type='rppg', fs=512)
-    ecg_peaks, _, _ = find_peaks_new(ecg_signal, signal_type='ecg', fs=512)
+def calculate_ptt(time, rppg_signal, ecg_signal, ecg_processor):
+    rppg_peaks = find_rppg_peaks(rppg_signal, fs=512)
+    ecg_processor.process(ecg_signal)
+    ecg_peaks = ecg_processor.get_peaks()
     
     if len(rppg_peaks) == 0 or len(ecg_peaks) == 0:
         return None, None, None
@@ -135,19 +107,8 @@ def calculate_ptt_new(time, rppg_signal, ecg_signal):
     
     return ptt_final, None, std
 
-def ptt_signals(timestamps, rppg_signal, ecg_signal, peak=True, filter=True, fs=512):
-    if filter:
-        rppg_signal = filter_signal(rppg_signal, fs=fs)
-        ecg_signal = filter_signal(ecg_signal, fs=fs)
-    if peak:
-        ptt, align, std = calculate_ptt_new(timestamps, rppg_signal, ecg_signal)
-        if ptt is not None:
-            print(f"PTT: {ptt:.3f} seconds, Std: {std:.3f}")
-        return ptt, align, std
-    return None, None, None
-
 class RawSignalViewer:
-    def __init__(self, data_list, reference_waveforms=None):
+    def __init__(self, data_list, reference_waveforms=None, method='nk'):
         self.data_list = data_list if data_list is not None else []
         self.current_raw_idx = 0
         self.current_clipped_idx = 0
@@ -156,6 +117,7 @@ class RawSignalViewer:
         self.ptt_results = []
         self.clipped_segments = []
         self.fs = 512
+        self.ecg_processor = ECGProcess(method=method, fs=self.fs)
         
     def on_key_press(self, event):
         if event.key == 'y':
@@ -202,7 +164,7 @@ class RawSignalViewer:
             rppg_filtered = rppg_signal
             ecg_filtered = ecg_signal
             
-            ptt, _, std = calculate_ptt_new(timestamps, rppg_filtered, ecg_filtered)
+            ptt, _, std = calculate_ptt(timestamps, rppg_filtered, ecg_filtered, self.ecg_processor)
             self.current_ptt = ptt
             self.current_std = std
             
@@ -211,8 +173,9 @@ class RawSignalViewer:
             else:
                 print("PTT: Unable to calculate")
             
-            rppg_peaks, _ = find_peaks_new(rppg_filtered, signal_type='rppg', fs=512)
-            ecg_peaks, pantompkins, pt_peaks = find_peaks_new(ecg_filtered, signal_type='ecg', fs=512)
+            rppg_peaks = find_rppg_peaks(rppg_filtered, fs=512)
+            ecg_peaks = self.ecg_processor.get_peaks()
+            additional_signals = self.ecg_processor.get_additional_signals()
 
             for ecg_peak_idx in range(len(ecg_peaks)):
                 start_idx = max(0, ecg_peaks[ecg_peak_idx-1] + int(0.7 * (ecg_peaks[ecg_peak_idx] - ecg_peaks[ecg_peak_idx-1])) if ecg_peak_idx > 0 else 0)
@@ -251,12 +214,23 @@ class RawSignalViewer:
             self.axes[0].grid(True, alpha=0.3)
             
             self.axes[1].plot(timestamps, ecg_filtered, label='ECG Signal')
-            self.axes[1].plot(timestamps, pantompkins, label='Pan-Tompkins', alpha=0.6)
             self.axes[1].plot(timestamps[ecg_peaks], ecg_filtered[ecg_peaks], "o", label='ECG Peaks')
-            self.axes[1].plot(timestamps[pt_peaks], pantompkins[pt_peaks], "s", label='PT Peaks', markersize=4)
+
+            if self.ecg_processor.method == 'pt':
+                pantompkins = additional_signals['pantompkins']
+                pt_peaks = additional_signals['pt_peaks']
+                self.axes[1].plot(timestamps, pantompkins, label='Pan-Tompkins', alpha=0.6)
+                self.axes[1].plot(timestamps[pt_peaks], pantompkins[pt_peaks], "s", label='PT Peaks', markersize=4)
+
+            if self.ecg_processor.method == 'nk':
+                ecg_quality = additional_signals['quality']
+                self.axes[1].plot(timestamps, ecg_quality, label='ECG Quality', alpha=0.6)
             
             ptt_text = f"PTT: {ptt:.3f}s, Std: {std:.3f}" if ptt is not None else "PTT: N/A"
-            self.axes[1].set_title(f'ECG Signal - {ptt_text}')
+            if self.ecg_processor.method == 'pt':
+                self.axes[1].set_title(f'ECG Signal - {ptt_text}')
+            elif self.ecg_processor.method == 'nk':
+                self.axes[1].set_title(f'ECG Signal - {ptt_text}, Mean quality: {np.mean(ecg_quality):.3f}')
             self.axes[1].set_xlabel('Time (s)')
             self.axes[1].set_ylabel('Amplitude')
             self.axes[1].legend()
@@ -305,7 +279,8 @@ if __name__ == '__main__':
     raw_data, cleaned_data = load_data_for_patients(bp_patient_list)
     reference_waveforms = list(load_reference_waveforms('./reference_ecg'))
     
-    viewer = RawSignalViewer(list(cleaned_data), reference_waveforms=reference_waveforms)
+    #viewer = RawSignalViewer(list(cleaned_data), reference_waveforms=reference_waveforms)
+    viewer = RawSignalViewer(list(cleaned_data), reference_waveforms=reference_waveforms, method='pt')
     ptt_results = viewer.show()
     
     print(f"\n\nTotal accepted: {len(ptt_results)}")
