@@ -13,3 +13,4 @@ rppg2ecg.onnx
 /test_sliced
 /mirror*
 *.csv
+*.zip
