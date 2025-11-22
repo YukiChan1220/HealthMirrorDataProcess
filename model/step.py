@@ -39,14 +39,13 @@ class Step(ModelBase):
                 break
                 
             image = np.array([[frame]]).astype("float16") / 255.0
-            if self.dt is not None:
-                input_dict = {"arg_0.1": image, "onnx::Mul_37": self.dt, **self.state}
-            else:
-                input_dict = {"arg_0.1": image, "onnx::Mul_37": dt, **self.state}
+            input_dict = {"arg_0.1": image, "onnx::Mul_37": dt, **self.state}
             result = self.model.run(None, input_dict)
             self.state = dict(zip(list(input_dict)[2:], result[1:]))
             result_queue.put((result[0][0, 0], timestamp))
         with open(self.state_path, "wb") as f:
             pickle.dump(self.state, f)
+
+        self.last_timestamp = None
             
         inference_vars.inference_completed = True

@@ -3,15 +3,13 @@ import inference_vars
 from queue import Queue
 from model.step import Step
 import preprocess.video2frame as v2f
-from log.result_log import ResultLogger
-from log.merge_new import FileMerger
 
 import threading
 import time
 import pandas as pd
 import os
-import sys
 import signal
+from tqdm import tqdm
 
 mirror_version = global_vars.mirror_version
 
@@ -86,6 +84,7 @@ class LocalInference:
             print(f"[Inference] Error: {self.data_dir} is not a valid directory.")
             return
 
+        dirs = []
         for dir in os.listdir(self.data_dir):
             if os.path.isdir(os.path.join(self.data_dir, dir)):
                 dir_index = int(dir[8:]) if dir[8:].isdigit() else -1
@@ -93,10 +92,13 @@ class LocalInference:
                     continue
                 if ending_point is not None and dir_index > ending_point:
                     continue
-                print(f"[Inference] Processing directory: {dir}")
-                self._inference(path=os.path.join(self.data_dir, dir))
-                if global_vars.user_interrupt:
-                    break
+                dirs.append(dir)
+
+        for dir in tqdm(dirs):
+            print(f"[Inference] Processing directory: {dir}")
+            self._inference(path=os.path.join(self.data_dir, dir))
+            if global_vars.user_interrupt:
+                break
 
 def main():
     signal.signal(signal.SIGINT, signal_handler)

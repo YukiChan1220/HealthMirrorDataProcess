@@ -37,9 +37,9 @@ def load_patient_with_bp(data_dir=data_dir, output_file=output_file):
 def load_data_for_patients(patient_list, raw_dir=data_dir, cleaned_dir=cleaned_dir):
     patient_ids = [int(p['lab_patient_id']) for p in patient_list]
     data_loader = DataLoader(raw_dir=raw_dir, cleaned_dir=cleaned_dir)
-    raw_data = list(data_loader.load_raw_data(patient_id=patient_ids))
-    cleaned_data = list(data_loader.load_cleaned_data(patient_id=patient_ids))
-    return raw_data, cleaned_data
+    raw_data_loader = data_loader.load_raw_data(patient_id=patient_ids)
+    cleaned_data_loader = data_loader.load_cleaned_data(patient_id=patient_ids)
+    return raw_data_loader, cleaned_data_loader
 
 def load_reference_waveforms(ref_dir):
     for f in os.listdir(ref_dir):
@@ -108,16 +108,21 @@ def calculate_ptt(time, rppg_signal, ecg_signal, ecg_processor):
     return ptt_final, None, std
 
 class RawSignalViewer:
-    def __init__(self, data_list, reference_waveforms=None, method='nk'):
-        self.data_list = data_list if data_list is not None else []
+    def __init__(self, dataloader, reference_waveforms=None, method='nk'):
+        self.dataloader = dataloader
+        self.dataframe = None
         self.current_raw_idx = 0
-        self.current_clipped_idx = 0
-        self.fig, self.axes = plt.subplots(3, 1, figsize=(12, 12))
+        self.fig, self.axes = plt.subplots(3, 2, figsize=(18, 12))
         self.fig.canvas.mpl_connect('key_press_event', self.on_key_press)
         self.ptt_results = []
-        self.clipped_segments = []
         self.fs = 512
         self.ecg_processor = ECGProcess(method=method, fs=self.fs)
+        self.patient_id = None
+
+        self.selected_signal = 0
+        self.signal_list = ['ecg', 'rppg', 'ppg']
+        self.clipped_segments = {s: [] for s in self.signal_list}
+        self.current_segment_idx = {s: 0 for s in self.signal_list}
         
     def on_key_press(self, event):
         if event.key == 'y':
@@ -126,163 +131,174 @@ class RawSignalViewer:
                 self.ptt_results.append((self.current_patient_id, self.current_ptt, 
                                         None, self.current_std))
             self.current_raw_idx += 1
-            self.current_clipped_idx = 0
-            self.clipped_segments = []
+            self.clipped_segments = {s: [] for s in self.signal_list}
+            self.patient_id, self.dataframe = next(self.dataloader, (None, None))
+            if self.dataframe is None:
+                plt.close(self.fig)
+                return
             self.update_plot()
         elif event.key == 'n':
             print("Reject")
             self.current_raw_idx += 1
-            self.current_clipped_idx = 0
-            self.clipped_segments = []
+            self.clipped_segments = {s: [] for s in self.signal_list}
+            self.patient_id, self.dataframe = next(self.dataloader, (None, None))
+            if self.dataframe is None:
+                plt.close(self.fig)
+                return
             self.update_plot()
-        elif event.key == 'q':
+        elif event.key == 'esc':
             print("Quit")
             plt.close(self.fig)
-        elif event.key == 'c':
+        elif event.key == 'up':
+            self.axes[self.selected_signal, 0].set_facecolor('white')
+            self.axes[self.selected_signal, 1].set_facecolor('white')
+            self.selected_signal = (self.selected_signal - 1) % len(self.signal_list)
+            self.axes[self.selected_signal, 0].set_facecolor('lightgray')
+            self.axes[self.selected_signal, 1].set_facecolor('lightgray')
+            self.fig.canvas.draw()
+            print(f"Selected {self.signal_list[self.selected_signal].upper()} signal")
+        elif event.key == 'down':
+            self.axes[self.selected_signal, 0].set_facecolor('white')
+            self.axes[self.selected_signal, 1].set_facecolor('white')
+            self.selected_signal = (self.selected_signal + 1) % len(self.signal_list)
+            self.axes[self.selected_signal, 0].set_facecolor('lightgray')
+            self.axes[self.selected_signal, 1].set_facecolor('lightgray')
+            self.fig.canvas.draw()
+            print(f"Selected {self.signal_list[self.selected_signal].upper()} signal")
+        elif event.key == 'right':
             print("Next Segment")
-            self.current_clipped_idx += 1
-            self.update_plot(segment=True)
-        elif event.key == 'v':
+            self.current_segment_idx[self.signal_list[self.selected_signal]] += 1
+            self.update_subplot(signal_idx=self.selected_signal, segment=True)
+        elif event.key == 'w':
             print("Save segment")
-            self.update_plot(save=True)
-            # Implement saving functionality here   
+            self.save_segment(signal_idx=self.selected_signal)  
     
-    def update_plot(self, segment=False, save=False):
-        if self.current_raw_idx >= len(self.data_list):
-            print(f"All {len(self.data_list)} segments processed.")
-            plt.close(self.fig)
-            return
-        
-        if len(self.clipped_segments) == 0:
-            patient_id, timestamps, rppg_signal, ecg_signal = self.data_list[self.current_raw_idx]
-            self.current_patient_id = patient_id
-            
-            print(f"\nPatient ID: {patient_id} [{self.current_raw_idx + 1}/{len(self.data_list)}]")
-            
-            #rppg_filtered = filter_signal(rppg_signal, fs=512, lowcut=0.5, highcut=5.0, order=4)
-            #ecg_filtered = filter_signal(ecg_signal, fs=512, lowcut=0.1, highcut=150.0, order=2)
-            rppg_filtered = rppg_signal
-            ecg_filtered = ecg_signal
-            
-            ptt, _, std = calculate_ptt(timestamps, rppg_filtered, ecg_filtered, self.ecg_processor)
-            self.current_ptt = ptt
-            self.current_std = std
-            
-            if ptt is not None:
-                print(f"PTT: {ptt:.3f} seconds, Std: {std:.3f}")
-            else:
-                print("PTT: Unable to calculate")
-            
-            rppg_peaks = find_rppg_peaks(rppg_filtered, fs=512)
-            ecg_peaks = self.ecg_processor.get_peaks()
-            additional_signals = self.ecg_processor.get_additional_signals()
-
-            for ecg_peak_idx in range(len(ecg_peaks)):
-                start_idx = max(0, ecg_peaks[ecg_peak_idx-1] + int(0.7 * (ecg_peaks[ecg_peak_idx] - ecg_peaks[ecg_peak_idx-1])) if ecg_peak_idx > 0 else 0)
-                end_idx = min(len(timestamps), ecg_peaks[ecg_peak_idx] + int(0.7 * (ecg_peaks[ecg_peak_idx+1] - ecg_peaks[ecg_peak_idx])) if ecg_peak_idx < len(ecg_peaks) - 1 else len(timestamps))
-                self.clipped_segments.append((
-                    patient_id,
-                    timestamps[start_idx:end_idx],
-                    rppg_filtered[start_idx:end_idx],
-                    ecg_filtered[start_idx:end_idx]
-                ))
-        
-        if save:
-            seg_patient_id, seg_timestamps, seg_rppg, seg_ecg = self.clipped_segments[self.current_clipped_idx]
-            filename = f"seg_{self.current_patient_id}_{self.current_raw_idx+1}_{self.current_clipped_idx + 1}.csv"
-            target_length = 512
-            new_timestamps = np.linspace(seg_timestamps[0], seg_timestamps[-1], target_length)
-            resampled_ecg = interp1d(seg_timestamps, seg_ecg, kind='cubic', fill_value='extrapolate')(new_timestamps)
-            csv_data = zip(new_timestamps, resampled_ecg)
-            with open(filename, mode='w', newline='') as file:
-                writer = csv.writer(file)
-                writer.writerow(['timestamps', 'ecg'])
-                writer.writerows(csv_data)
-            print(f"Saved clipped segment to {filename}")
-            return
-            
+    def update_subplot(self, signal_idx=0, segment=False):
+        signal_name = self.signal_list[signal_idx]
         if not segment:
-            self.axes[0].clear()
-            self.axes[1].clear()
-            
-            self.axes[0].plot(timestamps, rppg_filtered, label='rPPG Signal')
-            self.axes[0].plot(timestamps[rppg_peaks], rppg_filtered[rppg_peaks], "x", label='rPPG Peaks')
-            self.axes[0].set_title(f'rPPG Signal - Patient {patient_id}')
-            self.axes[0].set_xlabel('Time (s)')
-            self.axes[0].set_ylabel('Amplitude')
-            self.axes[0].legend()
-            self.axes[0].grid(True, alpha=0.3)
-            
-            self.axes[1].plot(timestamps, ecg_filtered, label='ECG Signal')
-            self.axes[1].plot(timestamps[ecg_peaks], ecg_filtered[ecg_peaks], "o", label='ECG Peaks')
+            timestamps = self.dataframe['Timestamp'].to_numpy()
+            self.axes[signal_idx, 0].clear()
+            self.axes[signal_idx, 1].clear()
+            if signal_name == 'rppg':
+                rppg_signal = self.dataframe['RPPG'].to_numpy()
+                rppg_filtered = rppg_signal
+                rppg_peaks = find_rppg_peaks(rppg_filtered, fs=512)
+                self.axes[signal_idx, 0].plot(timestamps, rppg_filtered, label='rPPG Signal')
+                self.axes[signal_idx, 0].plot(timestamps[rppg_peaks], rppg_filtered[rppg_peaks], "x", label='rPPG Peaks')
+                self.axes[signal_idx, 0].set_title(f'rPPG Signal - Patient {patient_id}')
+                self.axes[signal_idx, 0].set_xlabel('Time (s)')
+                self.axes[signal_idx, 0].set_ylabel('Amplitude')
+                self.axes[signal_idx, 0].legend()
+                self.axes[signal_idx, 0].grid(True, alpha=0.3)
+                self.fig.canvas.draw()
 
-            if self.ecg_processor.method == 'pt':
-                pantompkins = additional_signals['pantompkins']
-                pt_peaks = additional_signals['pt_peaks']
-                self.axes[1].plot(timestamps, pantompkins, label='Pan-Tompkins', alpha=0.6)
-                self.axes[1].plot(timestamps[pt_peaks], pantompkins[pt_peaks], "s", label='PT Peaks', markersize=4)
+            elif signal_name == 'ecg':
+                ecg_signal = self.dataframe['ECG'].to_numpy()
+                ecg_filtered = ecg_signal
+                ptt, _, std = calculate_ptt(timestamps, rppg_filtered, ecg_filtered, self.ecg_processor)
+                ecg_peaks = self.ecg_processor.get_peaks()
+                additional_signals = self.ecg_processor.get_additional_signals()
+                self.axes[signal_idx, 0].plot(timestamps, ecg_filtered, label='ECG Signal')
+                self.axes[signal_idx, 0].plot(timestamps[ecg_peaks], ecg_filtered[ecg_peaks], "o", label='ECG Peaks')
 
-            if self.ecg_processor.method == 'nk':
-                ecg_quality = additional_signals['quality']
-                self.axes[1].plot(timestamps, ecg_quality, label='ECG Quality', alpha=0.6)
-            
-            ptt_text = f"PTT: {ptt:.3f}s, Std: {std:.3f}" if ptt is not None else "PTT: N/A"
-            if self.ecg_processor.method == 'pt':
-                self.axes[1].set_title(f'ECG Signal - {ptt_text}')
-            elif self.ecg_processor.method == 'nk':
-                self.axes[1].set_title(f'ECG Signal - {ptt_text}, Mean quality: {np.mean(ecg_quality):.3f}')
-            self.axes[1].set_xlabel('Time (s)')
-            self.axes[1].set_ylabel('Amplitude')
-            self.axes[1].legend()
-            self.axes[1].grid(True, alpha=0.3)
+                if self.ecg_processor.method == 'pt':
+                    pantompkins = additional_signals['pantompkins']
+                    pt_peaks = additional_signals['pt_peaks']
+                    self.axes[signal_idx, 0].plot(timestamps, pantompkins, label='Pan-Tompkins', alpha=0.6)
+                    self.axes[signal_idx, 0].plot(timestamps[pt_peaks], pantompkins[pt_peaks], "s", label='PT Peaks', markersize=4)
 
-        self.axes[2].clear()
-        self.axes[2].set_title('Clipped Segment Viewer')
-        if self.current_clipped_idx < len(self.clipped_segments):
-            seg_patient_id, seg_timestamps, seg_rppg, seg_ecg = self.clipped_segments[self.current_clipped_idx]
+                if self.ecg_processor.method == 'nk':
+                    ecg_quality = additional_signals['quality']
+                    self.axes[signal_idx, 0].plot(timestamps, ecg_quality, label='ECG Quality', alpha=0.6)
+                
+                ptt_text = f"PTT: {ptt:.3f}s, Std: {std:.3f}" if ptt is not None else "PTT: N/A"
+                if self.ecg_processor.method == 'pt':
+                    self.axes[signal_idx, 0].set_title(f'ECG Signal - {ptt_text}')
+                elif self.ecg_processor.method == 'nk':
+                    self.axes[signal_idx, 0].set_title(f'ECG Signal - {ptt_text}, Mean quality: {np.mean(ecg_quality):.3f}')
+                self.axes[signal_idx, 0].set_xlabel('Time (s)')
+                self.axes[signal_idx, 0].set_ylabel('Amplitude')
+                self.axes[signal_idx, 0].legend()
+                self.axes[signal_idx, 0].grid(True, alpha=0.3)
+                self.fig.canvas.draw()
 
-            linear_sim = None
-            cosine_sim = None
-            if reference_waveforms is not None:
-                linear_sims = []
-                cosine_sims = []
-                target_length = 512
-                new_timestamps = np.linspace(seg_timestamps[0], seg_timestamps[-1], target_length)
-                resampled_ecg = interp1d(seg_timestamps, seg_ecg, kind='cubic', fill_value='extrapolate')(new_timestamps)
-                for patient_id, timestamps, ref_ecg in reference_waveforms:
-                    linear = np.corrcoef(resampled_ecg, ref_ecg)[0, 1]
-                    linear_sims.append((patient_id, linear))
-                    cosine = np.dot(resampled_ecg, ref_ecg) / (np.linalg.norm(resampled_ecg) * np.linalg.norm(ref_ecg))
-                    cosine_sims.append((patient_id, cosine))
-                linear_sim = np.mean([s[1] for s in linear_sims]) if linear_sims else -1.0
-                cosine_sim = np.mean([s[1] for s in cosine_sims]) if cosine_sims else -2.0
+            elif signal_name == 'ppg':
+                # TODO: Implement PPG plotting
+                pass
 
-            self.axes[2].plot(seg_timestamps, seg_rppg, label='Clipped rPPG Signal')
-            self.axes[2].plot(seg_timestamps, seg_ecg, label='Clipped ECG Signal')
-            self.axes[2].set_xlabel('Time (s)')
-            self.axes[2].set_ylabel('Amplitude')
-            self.axes[2].legend()
-            self.axes[2].grid(True, alpha=0.3)
-            self.axes[2].set_title(f'Clipped Segment {self.current_clipped_idx + 1}/{len(self.clipped_segments)}-Patient {seg_patient_id}. Linear: {linear_sim:.3f}, Cosine: {cosine_sim:.3f}')
+        else:
+            if signal_name == 'rppg':
+                # TODO: Implement clipped segment plotting for rPPG
+                pass
+            elif signal_name == 'ecg':
+                self.axes[signal_idx, 1].clear()
+                self.axes[signal_idx, 1].set_title('Clipped Segment Viewer')
+                if self.current_segment_idx[signal_name] < len(self.clipped_segments[signal_name]):
+                    seg_df = self.clipped_segments[signal_name][self.current_segment_idx[signal_name]]
+                linear_sim = None
+                cosine_sim = None
+                if reference_waveforms is not None:
+                    linear_sims = []
+                    cosine_sims = []
+                    target_length = 512
+                    new_timestamps = np.linspace(seg_df['Timestamp'].iloc[0], seg_df['Timestamp'].iloc[-1], target_length)
+                    resampled_ecg = interp1d(seg_df['Timestamp'], seg_df['ECG'], kind='cubic', fill_value='extrapolate')(new_timestamps)
+                    for patient_id, timestamps, ref_ecg in reference_waveforms:
+                        linear = np.corrcoef(resampled_ecg, ref_ecg)[0, 1]
+                        linear_sims.append((patient_id, linear))
+                        cosine = np.dot(resampled_ecg, ref_ecg) / (np.linalg.norm(resampled_ecg) * np.linalg.norm(ref_ecg))
+                        cosine_sims.append((patient_id, cosine))
+                    linear_sim = np.mean([s[1] for s in linear_sims]) if linear_sims else -1.0
+                    cosine_sim = np.mean([s[1] for s in cosine_sims]) if cosine_sims else -2.0
+
+                self.axes[signal_idx, 1].plot(seg_df['Timestamp'], seg_df['RPPG'], label='Clipped rPPG Signal')
+                self.axes[signal_idx, 1].plot(seg_df['Timestamp'], seg_df['ECG'], label='Clipped ECG Signal')
+                self.axes[signal_idx, 1].set_xlabel('Time (s)')
+                self.axes[signal_idx, 1].set_ylabel('Amplitude')
+                self.axes[signal_idx, 1].legend()
+                self.axes[signal_idx, 1].grid(True, alpha=0.3)
+                self.axes[signal_idx, 1].set_title(f'Clipped Segment {self.current_clipped_idx + 1}/{len(self.clipped_segments)}-Patient {self.patient_id}. Linear: {linear_sim:.3f}, Cosine: {cosine_sim:.3f}')
         
-        self.fig.suptitle("Press 'y' to accept, 'n' to reject, 'q' to quit, 'c' to view next segment, 'v' to save current segment", fontsize=12)
+    def save_segment(self, signal_idx=0):
+        signal_name = self.signal_list[signal_idx]
+        if self.current_segment_idx[signal_name] < len(self.clipped_segments[signal_name]):
+            seg_df = self.clipped_segments[signal_name][self.current_segment_idx[signal_name]]
+            filename = f"seg_{self.current_patient_id}_{self.current_raw_idx+1}_{self.current_segment_idx[signal_name] + 1}_{signal_name}.csv"
+            target_length = 512
+            new_timestamps = np.linspace(seg_df['Timestamp'].iloc[0], seg_df['Timestamp'].iloc[-1], target_length)
+            resampled_ecg = interp1d(seg_df['Timestamp'], seg_df[signal_name.upper()], kind='cubic', fill_value='extrapolate')(new_timestamps)
+            save_df = pd.DataFrame({
+                'Timestamp': new_timestamps,
+                signal_name: resampled_ecg
+            })
+            save_df.to_csv(filename, index=False)
+            print(f"Saved clipped segment to {filename}")
+
+    def update_plot(self):
+        for self.selected_signal in range(len(self.signal_list)):
+            self.update_subplot(signal_idx=self.selected_signal, segment=False)
+
+        self.fig.suptitle("Press 'y' to accept, 'n' to reject, 'esc' to quit", fontsize=12)
         self.fig.tight_layout()
         self.fig.canvas.draw()
     
-    def show(self):
+    def __call__(self):
+        self.patient_id, self.dataframe = next(self.dataloader, (None, None))
+        if self.dataframe is None:
+            plt.close(self.fig)
+            return
         self.update_plot()
         plt.show()
-        return self.ptt_results
+
+        return self.current_raw_idx + 1
+
 
 if __name__ == '__main__':
     bp_patient_list = load_patient_with_bp()
-    raw_data, cleaned_data = load_data_for_patients(bp_patient_list)
+    raw_data_loader, cleaned_data_loader = load_data_for_patients(bp_patient_list)
     reference_waveforms = list(load_reference_waveforms('./reference_ecg'))
     
-    #viewer = RawSignalViewer(list(cleaned_data), reference_waveforms=reference_waveforms)
-    viewer = RawSignalViewer(list(cleaned_data), reference_waveforms=reference_waveforms, method='pt')
-    ptt_results = viewer.show()
+    viewer = RawSignalViewer(cleaned_data_loader, reference_waveforms=reference_waveforms, method='pt')
+    total_processed = viewer()
+    print(f"Total processed raw signals: {total_processed}")
     
-    print(f"\n\nTotal accepted: {len(ptt_results)}")
-    for patient_id, ptt, _, std in ptt_results:
-        print(f"Patient {patient_id}: PTT={ptt:.3f}s, Std={std:.3f}")

@@ -1,2 +1,2 @@
 user_interrupt = False
-mirror_version = "2"
+mirror_version = "1"

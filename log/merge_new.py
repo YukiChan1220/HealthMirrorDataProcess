@@ -103,7 +103,7 @@ class FileMerger:
         self._load_data()
         self._resample_data()
         self.merged_df = pd.DataFrame(self.data)
-        #self.merged_df.to_csv(os.path.join(self.path, "merged_log.csv"), index=False)
+        self.merged_df.to_csv(os.path.join(self.path, "merged_log.csv"), index=False)
         if self.log:
             print(f"[FileMerger] Merged data saved to {os.path.join(self.path, 'merged_log.csv')}")
         return self.merged_df

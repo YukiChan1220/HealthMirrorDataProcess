@@ -12,7 +12,7 @@ def filter_signal(data, fs=512, lowcut=0.5, highcut=5.0, order=4):
     return data
 
 class ECGProcess:
-    def __init__(self, method='nk', fs=512):
+    def __init__(self, method='nk', fs=512, log=False):
         self.method = method
         self.fs = fs
         self.result_df = None
@@ -57,12 +57,13 @@ class ECGProcess:
             p = np.argmax(ecg_signal[left:right]) + left
             peaks.append(p)
         
-        print(f"Detected {len(peaks)}/{len(pt_peaks)} ECG peaks using Pan-Tompkins algorithm.")
-        
         self.peaks = np.array(peaks)
         self.additional_signals = {'pantompkins': pantompkins, 'pt_peaks': pt_peaks}
         
-        df_data = {'ECG_R_Peaks': np.zeros(len(ecg_signal), dtype=int)}
+        df_data = {
+            'ECG_R_Peaks': np.zeros(len(ecg_signal), dtype=int),
+            'PanTompkins': pantompkins
+            }
         df_data['ECG_R_Peaks'][self.peaks] = 1
         self.result_df = pd.DataFrame(df_data)
         
